@@ -1,0 +1,74 @@
+require 'fileutils'
+
+# FIXME x86_64 Mac OS X
+build_arch = ENV['BUILD_ARCH']
+unless build_arch
+  arch = `uname -m`.strip
+  kern = `uname -s`.strip.downcase
+  build_arch = "#{kern}-#{arch}"
+end
+BUILD_ARCH = build_arch
+
+RUBY_PKG_VERSION="1.9.3-p194"
+RUBY_PKG_PATH = "build/ruby-#{RUBY_PKG_VERSION}.tar.bz2"
+RUBY_BUILD_DIR = "build/ruby-#{RUBY_PKG_VERSION}_#{BUILD_ARCH}"
+
+CONFIGURE_OPTS = %w[
+  --disable-shared
+  --with-static-linked-ext
+  --with-ext=json,openssl,socket,stringio,zlib
+  --disable-rubygems
+  --disable-install-doc
+].join(' ')
+
+REPLACE_MAGIC = "@@59914b974c7eaa89e346eeb5abe3f571@@"
+
+desc "Download ruby archive package"
+file RUBY_PKG_PATH do |t|
+  FileUtils.mkdir_p "build"
+  sh %[curl -o #{t.name} ftp://ftp.ruby-lang.org/pub/ruby/1.9/ruby-#{RUBY_PKG_VERSION}.tar.bz2]
+end
+
+desc "Extract ruby archive package"
+file "#{RUBY_BUILD_DIR}/configure" => RUBY_PKG_PATH do |t|
+  FileUtils.rm_rf RUBY_BUILD_DIR
+  sh %[bunzip2 -c #{RUBY_PKG_PATH} | tar -C build -xf -]
+  FileUtils.mv "build/ruby-#{RUBY_PKG_VERSION}", RUBY_BUILD_DIR
+  touch t.name
+end
+
+desc "Build ruby"
+file "#{RUBY_BUILD_DIR}/ruby" => "#{RUBY_BUILD_DIR}/configure" do
+  Dir.chdir(RUBY_BUILD_DIR) do
+    sh %[./configure #{CONFIGURE_OPTS}]
+    sh %[make]
+  end
+end
+
+desc "Build rubyme"
+file "build/arch/rubyme-#{BUILD_ARCH}" => "#{RUBY_BUILD_DIR}/ruby" do |t|
+  unless File.read("#{RUBY_BUILD_DIR}/Makefile").include?("@RUBYME_MK@")
+    sh %[cat rubyme/rubyme.mk >> #{RUBY_BUILD_DIR}/Makefile]
+  end
+
+  sh %[cp rubyme/rubyme.c #{RUBY_BUILD_DIR}/rubyme.c]
+  Dir.chdir(RUBY_BUILD_DIR) do
+    sh %[make rubyme]
+  end
+
+  bin = File.read("#{RUBY_BUILD_DIR}/rubyme").force_encoding('ASCII-8BIT')
+  str = bin.bytesize.to_s
+  repl = (" " * (REPLACE_MAGIC.size - str.size)) + str
+  bin.sub!(REPLACE_MAGIC, repl)
+
+  FileUtils.mkdir_p "build/arch"
+  File.open(t.name, "wb") {|f| f.write bin }
+  chmod 0755, t.name
+end
+
+desc "Create arch/rubyme"
+task 'rubyme:build' => "build/arch/rubyme-#{BUILD_ARCH}" do
+  FileUtils.mkdir_p "arch"
+  sh %[cp build/arch/rubyme-#{BUILD_ARCH} arch/rubyme-#{BUILD_ARCH}]
+end
+
